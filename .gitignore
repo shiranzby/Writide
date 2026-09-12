@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test output
+test-results/
+
+# Cache directories
+.vite/
+.vitest.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local documents
+Workspace/*
+!Workspace/.gitkeep
+/.typora-web-workspace-state.json
+/.typora-web-workspace-state.json.tmp
+.env
+.env.*
+!.env.example
+playwright-report/
+blob-report/

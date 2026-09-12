@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>图片</title>
+  <style>body{margin:16px;background:#fff;color:#222}img{display:block;max-width:100%;height:auto;margin:auto}</style>
+</head>
+<body>
+  <img id="image" alt="无法显示图片">
+  <script>
+    const value = new URLSearchParams(location.search).get('src');
+    try {
+      const url = new URL(value);
+      if (['http:', 'https:', 'blob:'].includes(url.protocol) || /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon);base64,/i.test(value)) document.querySelector('#image').src = url.href;
+    } catch {}
+  </script>
+</body>
+</html>
