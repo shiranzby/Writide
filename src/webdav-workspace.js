@@ -1,4 +1,4 @@
-export const DEFAULT_DAV_URL = 'https://dav.jianguoyun.com/dav/';
+export const DEFAULT_DAV_URL = 'https://dav.jianguoyun.com/dav/Typora/';
 let token;
 let features = {};
 export async function webdavRequest(body, refreshed = false) {
@@ -12,11 +12,15 @@ export async function webdavRequest(body, refreshed = false) {
     if (!token) throw new Error('WebDAV本机服务不可用，请重启服务');
   }
   if (body.action === 'rename' && !features.documentRename) throw new Error('当前后端尚未加载文档重命名功能，请先保存或导出修改，再停止旧服务并重新启动BAT');
+  if (body.action === 'move' && !features.documentMove) throw new Error('请保存修改并重启后端以启用文档移动');
   const response = await fetch('/api/webdav', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Paper-Dav-Token': token }, body: JSON.stringify(body) });
-  const result = await response.json();
+  const responseText = await response.text();
+  let result = {};
+  try { result = responseText ? JSON.parse(responseText) : {}; } catch { /* Preserve non-JSON proxy errors below. */ }
   if (!response.ok) {
     if (response.status === 403 && !refreshed) { token = null; return webdavRequest(body, true); }
-    throw Object.assign(new Error(result.error || 'WebDAV操作失败'), { code: result.code || (response.status === 412 ? 'WORKSPACE_CONFLICT' : 'WEBDAV_ERROR'), status: response.status, retryAt: result.retryAt });
+    const message = result.error || (response.status === 403 ? '服务拒绝写入，请检查反向代理来源设置' : `WebDAV请求失败（${response.status}）`);
+    throw Object.assign(new Error(message), { code: result.code || (response.status === 412 ? 'WORKSPACE_CONFLICT' : 'WEBDAV_ERROR'), status: response.status, retryAt: result.retryAt });
   }
   return result;
 }
@@ -56,6 +60,11 @@ export function webdavHandle(config) {
       cacheAction: (action, extra = {}) => call(`cache-${action}`, '', extra),
       async renameFileAtPath(target, destination, content) {
         const result = await call('rename', target, { destination, content, etag: versions.get(target) });
+        versions.delete(target); versions.set(destination, result.etag);
+        return result;
+      },
+      async moveFileAtPath(target, destination, content) {
+        const result = await call('move', target, { destination, content, etag: versions.get(target) });
         versions.delete(target); versions.set(destination, result.etag);
         return result;
       },
@@ -99,6 +108,8 @@ export function webdavHandle(config) {
         return handle(target, 'file');
       },
       async getFile(media = false) {
+        // A newly created handle has no remote bytes until its first close().
+        if (versions.has(path) && versions.get(path) === null) return new File([], this.name);
         const result = await call('read', path, { media });
         versions.set(path, result.etag || '');
         const file = new File([Uint8Array.from(atob(result.data), char => char.charCodeAt(0))], this.name,

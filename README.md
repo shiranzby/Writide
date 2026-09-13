@@ -6,6 +6,7 @@
 
 <p align="center">
   <img alt="Status" src="https://img.shields.io/badge/status-preview-f59e0b">
+  <img alt="Release" src="https://img.shields.io/badge/release-v0.2.0--preview-2563eb">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-22c55e">
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white">
   <img alt="CodeMirror" src="https://img.shields.io/badge/editor-CodeMirror%206-d30707">
@@ -23,6 +24,7 @@ Writide 是一个面向个人知识库的 Markdown 编辑器。它直接管理�
 - [为什么做 Writide](#为什么做-writide)
 - [功能](#功能)
 - [快速开始](#快速开始)
+- [Docker 部署](#docker-部署)
 - [使用方式](#使用方式)
 - [工作原理](#工作原理)
 - [项目结构](#项目结构)
@@ -73,7 +75,7 @@ Writide 是一个面向个人知识库的 Markdown 编辑器。它直接管理�
 - ETag 条件保存、同名覆盖保护、写后核对与断线重连
 - 图片近视口预取，默认前后各 5 张、最多 10 个调度任务
 - 服务端图片磁盘缓存、自然尺寸缓存、容量管理与版本检查
-- Windows 下可选 DPAPI 加密保存密码和自动登录
+- Windows使用DPAPI、Docker/Linux使用AES-256-GCM，可选加密保存密码和自动登录
 
 ## 快速开始
 
@@ -106,6 +108,30 @@ $env:PORT = '5195'
 
 当前开发服务还会使用 `PORT + 1` 作为热更新端口。启动日志保存在 `writide.log`。
 
+## Docker 部署
+
+`v0.2.0` 提供 `linux/amd64` 与 `linux/arm64` 多架构镜像，覆盖常见 x86-64 电脑、NAS、服务器，以及 64 位 ARMv8/AArch64 设备。GitHub Actions 会分别构建并启动检查两个架构，再发布统一镜像；设备无需安装 Node.js，也无需本机编译。
+
+```bash
+git clone --branch v0.2.0 https://github.com/shiranzby/Writide.git
+cd Writide
+docker compose pull
+docker compose up -d --no-build
+docker compose ps
+```
+
+浏览器打开 `http://Docker设备地址:5173/`，默认账号为 `admin`，默认密码为 `password`。进入后在“设置 → 访问安全”修改为至少 8 个字符的新密码；修改结果以摘要保存在 Docker 数据卷中。需要固定域名、监听地址或初始密码时再复制 `.env.example` 为 `.env` 并修改。
+
+默认镜像为 `ghcr.io/shiranzby/writide:0.2.0`，Docker 会自动选择当前设备架构。也可以先单独确认设备能拉取：
+
+```bash
+docker pull ghcr.io/shiranzby/writide:0.2.0
+```
+
+无法连接 GHCR 时，可从 [v0.2.0 Releases](https://github.com/shiranzby/Writide/releases/tag/v0.2.0) 下载对应架构的离线镜像；其他架构可按 Docker 指南从源码构建。
+
+首次访问会出现浏览器账号密码窗口。完整的安装、局域网地址、架构判断、升级、备份、停止、故障排查及可直接交给 AI 的部署提示词见 [Docker 部署指南](docs/DOCKER.md)。该配置不是多用户平台或已完成安全审计的公网服务，远程访问必须放在 HTTPS/VPN 等独立安全边界之后。
+
 ## 使用方式
 
 ### 本地目录
@@ -122,7 +148,7 @@ $env:PORT = '5195'
 
 1. 在坚果云创建第三方应用密码。
 2. 打开 Writide 的 WebDAV 连接窗口。
-3. 地址留空可使用默认地址 `https://dav.jianguoyun.com/dav/`。
+3. 地址留空可使用默认地址 `https://dav.jianguoyun.com/dav/Typora/`，目录名称区分大小写。
 4. 如果笔记位于子目录，可直接填写 `https://dav.jianguoyun.com/dav/Typora/`。
 5. 输入账号和应用密码，按需要启用保存密码与自动登录。
 
@@ -159,8 +185,8 @@ flowchart LR
 - **Node.js HTTP 服务**：静态入口、本机工作区 API 与 Vite 中间件
 - **webdav**：远端协议操作
 - **fast-xml-parser**：解析 WebDAV 分页目录响应
-- **image-size**：读取缓存图片的自然尺寸
-- **Windows DPAPI**：可选的本机凭据加密
+- **有界图片头解析**：读取常见 Web 图片的自然尺寸，异常格式不阻塞显示
+- **凭据加密**：Windows使用DPAPI，Docker/Linux使用持久卷内AES-256-GCM凭据库
 
 ## 项目结构
 
@@ -211,10 +237,10 @@ npx playwright test -c playwright.portable.config.ts --workers=1
 
 ## 数据与安全
 
-- 默认服务只监听 `127.0.0.1`，适合可信的单用户本机环境。
+- Docker默认监听所有网卡以便局域网部署，并使用已公开的初始密码 `password`；首次登录后必须在“设置 → 访问安全”修改。
 - 当前没有公网登录、多用户隔离、CSRF 防护和完整安全审计。
 - 请勿把当前服务直接通过内网穿透或端口转发暴露到公网。
-- WebDAV 密码默认只保存在服务内存；显式保存时由当前 Windows 用户的 DPAPI 加密。
+- WebDAV密码默认只保存在服务内存；显式保存时，Windows使用当前用户DPAPI，Docker/Linux使用AES-256-GCM加密后写入 `/data`。
 - 图片缓存位于运行服务的设备，不是远端原件，也不是未保存草稿的备份。
 - 发布 Issue、日志或测试轨迹前，请移除账号、路径、正文和图片等私人信息。
 
@@ -223,22 +249,23 @@ npx playwright test -c playwright.portable.config.ts --workers=1
 ## 当前限制
 
 - 仍是预览版本，首次处理特殊复杂 Markdown 时应先备份。
-- WebDAV 文件夹改名、远端跨目录移动、删除和完整离线同步尚未交付。
+- WebDAV 文档可跨目录移动，并会先复制校验同级 `.assets` 资源；远端文件夹改名、文件夹移动、删除和完整离线同步尚未交付。
 - WebDAV 保存失败后会保留当前编辑内容，但尚无独立的离线草稿与三方冲突合并界面。
 - 图片文件操作与 Markdown 撤销不是跨文件原子事务。
 - 从未读取过尺寸的远端图片仍需估算占位，极端文档的首次滚动几何仍可能变化。
 - 浏览器临时工作区使用 `localStorage`，不适合保存大型附件。
-- 当前服务不是生产级公网服务，Docker 镜像尚未交付。
+- Docker面向可信单用户测试；支持加密保存WebDAV密码及重启后自动重连，但尚未完成多用户隔离与独立安全审计。
 - 文件树暂不把所有图片作为独立文档标签打开。
 
-当前版本为 `0.1.0` 预览版；新问题请通过脱敏后的最小复现提交。
+当前版本为 `0.2.0` 预览版；新问题请通过脱敏后的最小复现提交。
 
 ## 路线图
 
 - [ ] 离线草稿与远端冲突恢复
 - [ ] 设备侧图片缓存和完整缓存状态面板
 - [ ] 图片独立标签页与更多附件预览
-- [ ] 生产服务拆分和单用户 Docker 部署
+- [x] 单用户 Docker 静态运行路径与 amd64/arm64 多架构镜像
+- [ ] 根据真实设备需求评估更多 CPU 架构
 - [ ] 公网认证、HTTPS 部署说明与安全审计
 - [ ] 主入口状态与工作区提供者进一步拆分
 - [ ] 将剩余私人路径测试迁移为公开合成夹具

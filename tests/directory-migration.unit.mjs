@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { migrateDirectoryEntry, planDirectoryMoves } from '../src/directory-migration.js';
+import { migrateDirectoryEntry, planDirectoryMoves, migrateDocumentWithAssets, documentAssetMoves } from '../src/directory-migration.js';
 
 function filesystem(initial, hooks = {}) {
   const files = new Map(Object.entries(initial).map(([path, value]) => [path, new Blob([value])]));
@@ -49,6 +49,21 @@ function filesystem(initial, hooks = {}) {
 const original = { 'old/note.md': '# 原文\r\n![图](./note.assets/a.png)\r\n',
   'old/note.assets/a.png': new Uint8Array([0, 255, 3, 128]), 'old/.hidden': 'hidden', 'old/nested/other.bin': 'attachment' };
 const move = { from: 'old', to: 'new', kind: 'directory' };
+
+test('document transfer copies verified shared assets before removing the source document', async () => {
+  const fs = filesystem(original); fs.dirs.add('archive');
+  await migrateDocumentWithAssets(fs.root, { from: 'old/note.md', to: 'archive/note.md', kind: 'file' }, [{ src: './note.assets/a.png' }]);
+  assert.equal(fs.files.has('old/note.md'), false);
+  assert.equal(await fs.files.get('archive/note.md').text(), original['old/note.md']);
+  assert.deepEqual(await fs.files.get('archive/note.assets/a.png').arrayBuffer(), await fs.files.get('old/note.assets/a.png').arrayBuffer());
+});
+
+test('attachment failure preserves source document and collisions are not overwritten', async () => {
+  const fs = filesystem(original, { write: path => { if (path.endsWith('a.png')) throw new Error('full'); } }); fs.dirs.add('archive');
+  await assert.rejects(migrateDocumentWithAssets(fs.root, { from: 'old/note.md', to: 'archive/note.md', kind: 'file' }, [{ src: './note.assets/a.png' }]));
+  assert.ok(fs.files.has('old/note.md')); assert.equal(fs.files.has('archive/note.md'), false);
+  assert.throws(() => documentAssetMoves('old/a.md', 'archive/a.md', [{ src: '../shared/x.png' }]));
+});
 
 test('folder migration preserves binary assets, hidden files, empty directories and CRLF', async () => {
   const fs = filesystem(original);

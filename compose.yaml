@@ -1,0 +1,33 @@
+services:
+  writide:
+    image: ${WRITIDE_IMAGE:-ghcr.io/shiranzby/writide:0.2.0}
+    build:
+      context: .
+      args:
+        FRONTEND_SOURCE: ${FRONTEND_SOURCE:-build}
+    ports:
+      - "${WRITIDE_BIND_IP:-0.0.0.0}:5173:5173"
+    environment:
+      WRITIDE_ORIGIN: ${WRITIDE_ORIGIN:-}
+      WRITIDE_USER: ${WRITIDE_USER:-admin}
+      WRITIDE_PASSWORD: ${WRITIDE_PASSWORD:-password}
+    volumes:
+      - writide-data:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+volumes:
+  writide-data:

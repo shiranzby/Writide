@@ -62,3 +62,28 @@ test('Windows credential store persists encrypted bytes and supports explicit re
     assert.equal(await store.read(), null);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('Docker credential store encrypts at rest and restores automatic login after recreation', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'writide-portable-credentials-'));
+  const file = path.join(dir, 'credentials.enc');
+  const keyFile = path.join(dir, 'credentials.key');
+  const dav = await mockWebdav();
+  try {
+    const profile = { url: dav.url, username: 'writer', password: 'secret', remember: true, autoLogin: true };
+    const firstStore = createCredentialStore(file, { platform: 'linux', keyFile });
+    const firstService = createWebdavService({ credentials: firstStore });
+    const connected = await firstService.run({ action: 'connect', ...profile });
+    const encrypted = await readFile(file, 'utf8');
+    const key = await readFile(keyFile, 'utf8');
+    assert.equal(encrypted.includes(profile.password), false);
+    assert.equal(key.includes(profile.password), false);
+    assert.deepEqual(await createCredentialStore(file, { platform: 'linux', keyFile }).read(), {
+      url: profile.url, username: profile.username, password: profile.password, autoLogin: true,
+    });
+    const restoredService = createWebdavService({ credentials: createCredentialStore(file, { platform: 'linux', keyFile }) });
+    const resumed = await restoredService.run({ action: 'resume', url: dav.url, username: profile.username, session: connected.session, automatic: true });
+    assert.notEqual(resumed.session, connected.session);
+    await createCredentialStore(file, { platform: 'linux', keyFile }).write(null);
+    assert.equal(await firstStore.read(), null);
+  } finally { await dav.close(); await rm(dir, { recursive: true, force: true }); }
+});

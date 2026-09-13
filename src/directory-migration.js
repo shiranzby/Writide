@@ -72,7 +72,13 @@ export async function migrateDirectoryEntry(root, move) {
   const snapshot = await inventory(handle);
   const destination = await parentAt(root, move.to, true);
   for await (const [name] of destination.parent.entries()) {
-    if (name.toLocaleLowerCase() === destination.name.toLocaleLowerCase()) throw new Error(`迁移目标已存在，未覆盖：${move.to}`);
+    if (name.toLocaleLowerCase() !== destination.name.toLocaleLowerCase()) continue;
+    if (move.copyOnly && name === destination.name) {
+      const existing = move.kind === 'directory'
+        ? await destination.parent.getDirectoryHandle(name) : await destination.parent.getFileHandle(name);
+      if (await unchanged(existing, snapshot)) return { retained: [] };
+    }
+    throw new Error(`迁移目标已存在，未覆盖：${move.to}`);
   }
   let target;
   try {
@@ -103,6 +109,7 @@ export async function migrateDirectoryEntry(root, move) {
     throw new Error(`迁移未完成，原路径未删除；请检查目标副本 ${move.to}：${error.message}`);
   }
 
+  if (move.copyOnly) return { retained: [] };
   const retained = [];
   // Never recursively delete: newly added or changed files must survive cleanup.
   for (const entry of [...snapshot].reverse()) {
@@ -119,4 +126,38 @@ export async function migrateDirectoryEntry(root, move) {
     } catch { retained.push(entry.path || move.from); }
   }
   return { retained };
+}
+
+export function documentAssetMoves(from, to, references) {
+  const oldParent = parts(from).slice(0, -1), newParent = parts(to).slice(0, -1);
+  if (oldParent.join('/') === newParent.join('/')) return [];
+  const assets = new Map();
+  for (const { src } of references) {
+    if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(src)) continue;
+    let relative;
+    try { relative = decodeURIComponent(src.split(/[?#]/)[0]).replace(/^\.\//, ''); }
+    catch { throw new Error('图片路径编码无效，未移动文档'); }
+    const names = parts(relative);
+    if (names.length > 1 && !names[0].endsWith('.assets')) throw new Error('图片位于非.assets共享目录，请先整理附件再移动文档');
+    const name = names[0];
+    assets.set(name, { from: [...oldParent, name].join('/'), to: [...newParent, name].join('/'),
+      kind: names.length > 1 ? 'directory' : 'file', copyOnly: true });
+  }
+  return [...assets.values()];
+}
+
+export async function migrateDocumentWithAssets(root, move, references, content) {
+  const assets = documentAssetMoves(move.from, move.to, references);
+  const destination = await parentAt(root, move.to);
+  for await (const [name] of destination.parent.entries()) {
+    if (name.toLocaleLowerCase() === destination.name.toLocaleLowerCase()) throw new Error('目标文档已存在，未移动');
+  }
+  // Copies remain at the source because another document may share the folder.
+  for (const asset of assets) await migrateDirectoryEntry(root, asset);
+  if (root.webdav) {
+    const result = await root.moveFileAtPath(move.from, move.to, content);
+    if (result.changed) throw new Error('远端移动后内容已改变，请保留本机修改并重新连接核对');
+    return { retained: [] };
+  }
+  return migrateDirectoryEntry(root, move);
 }

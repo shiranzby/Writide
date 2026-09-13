@@ -15,7 +15,7 @@ function safePath(value = '') {
   return '/' + value;
 }
 function endpoint(value) {
-  const url = new URL(value || 'https://dav.jianguoyun.com/dav/');
+  const url = new URL(value || 'https://dav.jianguoyun.com/dav/Typora/');
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
       || url.hostname.startsWith('169.254.') || url.hostname === 'metadata.google.internal') throw new Error('请输入有效的 HTTP(S) WebDAV 目录地址，不要在地址中包含密码');
   url.pathname = url.pathname.replace(/\/*$/, '/');
@@ -109,10 +109,11 @@ export function createWebdavService({ credentials, imageCache } = {}) {
         return {};
       }
       const client = session.client, path = safePath(body.path);
-      if (body.action === 'rename') {
+      if (body.action === 'rename' || body.action === 'move') {
         const destination = safePath(body.destination);
         if (!/\.(md|markdown|txt)$/i.test(path) || !/\.(md|markdown|txt)$/i.test(destination)
-            || path.slice(0, path.lastIndexOf('/')) !== destination.slice(0, destination.lastIndexOf('/'))
+            || (body.action === 'rename' && path.slice(0, path.lastIndexOf('/')) !== destination.slice(0, destination.lastIndexOf('/')))
+            || (body.action === 'move' && path.split('/').at(-1) !== destination.split('/').at(-1))
             || destination === path) throw new Error('只支持同一目录内的文档重命名');
         const tag = body.etag;
         const quoted = typeof tag === 'string' && /^"[^\r\n"]+"$/.test(tag);
@@ -120,6 +121,12 @@ export function createWebdavService({ credentials, imageCache } = {}) {
           && typeof tag === 'string' && /^[A-Za-z0-9_-]+$/.test(tag);
         if (!quoted && !nutstoreOpaque) throw new Error('缺少可用于条件重命名的ETag，未移动文件');
         if (typeof body.content !== 'string' || Buffer.byteLength(body.content) > limit) throw new Error('无效文档内容');
+        if (body.action === 'move') {
+          const original = await client.getFileContents(path, { ...options(), details: true });
+          if (original.headers.etag !== tag || !Buffer.from(original.data).equals(Buffer.from(body.content))) {
+            throw Object.assign(new Error('移动前源文档已变化，未移动'), { status: 412 });
+          }
+        }
         await client.moveFile(path, destination, { ...options(), overwrite: false, headers: { 'If-Match': tag, 'X-Paper-Dav-Work': 'write' } });
         for (const item of sessions.values()) if (item.cacheAccount === session.cacheAccount) item.lists.clear();
         try {

@@ -10,7 +10,7 @@ import { MarkdownDocumentModel, blockSourceRange, rawBlockStructuralPrefix, pars
 import { canvasBlockAtLine, createCanvasBlocks } from './markdown-canvas.js';
 import { MarkdownUnifiedCanvas } from './markdown-unified-canvas.js';
 import { saveDirectoryImage, renameDirectoryImage } from './markdown-image-files.js';
-import { migrateDirectoryEntry, planDirectoryMoves } from './directory-migration.js';
+import { migrateDirectoryEntry, planDirectoryMoves, migrateDocumentWithAssets } from './directory-migration.js';
 import { webdavRequest, webdavHandle, resumeWebdav, rememberDavSession, DEFAULT_DAV_URL } from './webdav-workspace.js';
 import { createWebdavDialog } from './webdav-dialog.js';
 import { createDavTree } from './webdav-tree.js';
@@ -397,7 +397,20 @@ async function saveDirectoryWorkspace(value, dirtyDocumentIds = new Set()) {
     for (const doc of value.documents) {
       const previous = directoryProviderSnapshot.get(doc.id);
       const extension = doc.sourceExtension || '.md';
-      if (previous && (previous.path.split('/').at(-1) !== doc.name + extension || previous.path.split('/').slice(0, -1).join('/') !== parentPath(doc.parentId))) throw new Error('WebDAV暂不支持移动或重命名');
+      const destination = [parentPath(doc.parentId), providerSegment(doc.name, 'Untitled') + extension].filter(Boolean).join('/');
+      if (previous && previous.path !== destination) {
+        if (doc.webdavUnloaded) {
+          const file = await directoryHandle.readFileAtPath(previous.path);
+          doc.content = await file.text(); doc.sourceLineEnding = detectLineEnding(doc.content);
+          delete doc.webdavUnloaded;
+        }
+        await migrateDocumentWithAssets(directoryHandle, { from: previous.path, to: destination, kind: 'file' },
+          davImageReferences(doc.content), preserveDocumentLineEndings(doc));
+        doc.sourcePath = destination;
+        const current = workspace.documents.find(item => item.id === doc.id);
+        if (current) Object.assign(current, { sourcePath: destination, content: doc.content, sourceLineEnding: doc.sourceLineEnding, webdavUnloaded: false });
+        directoryProviderSnapshot.set(doc.id, { type: 'document', path: destination });
+      }
       if (previous && !dirtyDocumentIds.has(doc.id)) continue;
       if (doc.webdavUnloaded) continue;
       const path = doc.sourcePath || [parentPath(doc.parentId), providerSegment(doc.name, 'Untitled') + extension].filter(Boolean).join('/');
@@ -444,7 +457,10 @@ async function saveDirectoryWorkspace(value, dirtyDocumentIds = new Set()) {
   const layout = buildDirectoryLayout(value);
   const moves = planDirectoryMoves(layout, directoryProviderSnapshot);
   for (const move of moves) {
-    const result = await migrateDirectoryEntry(directoryHandle, move);
+    const movedDoc = move.kind === 'file' && value.documents.find(doc => directoryProviderSnapshot.get(doc.id)?.path === move.from);
+    const result = movedDoc
+      ? await migrateDocumentWithAssets(directoryHandle, move, davImageReferences(movedDoc.content), preserveDocumentLineEndings(movedDoc))
+      : await migrateDirectoryEntry(directoryHandle, move);
     for (const [id, previous] of directoryProviderSnapshot) {
       if (previous.path !== move.from && !(move.kind === 'directory' && previous.path.startsWith(move.from + '/'))) continue;
       const path = move.to + previous.path.slice(move.from.length);
@@ -620,6 +636,7 @@ document.querySelector('#app').innerHTML = `
           <button data-settings-tab="markdown">Markdown</button>
           <button data-settings-tab="images">图像</button>
           <button data-settings-tab="cache">缓存与网络</button>
+          <button data-settings-tab="security">访问安全</button>
         </nav>
         <div class="settings-content">
           <section class="settings-page active" data-settings-page="general">
@@ -673,6 +690,18 @@ document.querySelector('#app').innerHTML = `
             <label class="setting-row"><span><b>为相对路径添加 ./</b><small>让路径在 Markdown 阅读器中更明确</small></span><input id="setting-dot-image" type="checkbox" checked /></label>
             <label class="setting-row"><span><b>自动转义图片 URL</b><small>处理空格和非 ASCII 文件名</small></span><input id="setting-escape-image" type="checkbox" checked /></label>
           </section>
+          <section class="settings-page" data-settings-page="security">
+            <h3>访问安全</h3><p>管理打开 Writide 时使用的访问密码。</p>
+            <form id="access-password-form">
+              <fieldset id="access-password-fields" disabled>
+                <label class="select-row"><span><b>新密码</b><small>至少 8 个字符</small></span><input name="password" type="password" minlength="8" autocomplete="new-password" required /></label>
+                <label class="select-row"><span><b>确认密码</b></span><input name="confirm" type="password" minlength="8" autocomplete="new-password" required /></label>
+                <label class="setting-row"><span><b>显示密码</b></span><input name="show" type="checkbox" /></label>
+                <div class="cache-actions"><button type="submit"><i data-lucide="check-square"></i>修改密码</button></div>
+              </fieldset>
+            </form>
+            <p id="access-password-message" role="status"></p>
+          </section>
         </div>
       </div>
     </section>
@@ -701,6 +730,20 @@ cachePage.innerHTML = `<h3>服务端图片缓存</h3>
   </form><dl id="image-cache-stats"></dl><p id="image-cache-message" role="status"></p>`;
 document.querySelector('.settings-content').append(cachePage);
 createIcons({ icons: iconSet });
+async function updateAccessSettings() {
+  const fields = document.querySelector('#access-password-fields');
+  const message = document.querySelector('#access-password-message');
+  fields.disabled = true;
+  try {
+    const response = await fetch('/api/access');
+    if (!response.ok) throw new Error('仅Docker部署提供访问密码设置');
+    const state = await response.json();
+    message.textContent = state.usingDefaultPassword
+      ? '当前使用默认账号 admin 和默认密码 password，请在对外访问前修改。'
+      : `当前访问账号：${state.username}`;
+    fields.disabled = false;
+  } catch (error) { message.textContent = error.message; }
+}
 async function updateCacheSettings() {
   const fields = document.querySelector('#image-cache-fields'); fields.disabled = true;
   const message = document.querySelector('#image-cache-message');
@@ -1809,10 +1852,11 @@ function markSaving() {
   saveTimer = setTimeout(async () => {
     try {
       await persistWorkspace();
-      state.textContent = '已保存';
+      state.textContent = '已保存'; state.removeAttribute('title');
     } catch (error) {
       console.error('保存失败:', error);
       state.textContent = error?.code === 'WORKSPACE_CONFLICT' ? '保存冲突' : '保存失败';
+      state.title = error?.message || '保存失败';
       scheduleDavRecovery(error);
     }
   }, directoryHandle?.webdav ? 1500 : 220);
@@ -2725,7 +2769,7 @@ document.addEventListener('click', event => {
     const rect = menu.getBoundingClientRect(); popover.style.left = `${rect.left}px`; popover.hidden = false;
   }
   const tab = event.target.closest('[data-panel]'); if (tab) { document.querySelectorAll('.sidebar-tab').forEach(item => item.classList.toggle('active', item === tab)); document.querySelectorAll('.sidebar-panel').forEach(item => item.classList.toggle('active', item.id === `${tab.dataset.panel}-panel`)); }
-  const settingsTab = event.target.closest('[data-settings-tab]'); if (settingsTab) { document.querySelectorAll('[data-settings-tab]').forEach(item => item.classList.toggle('active', item === settingsTab)); document.querySelectorAll('[data-settings-page]').forEach(item => item.classList.toggle('active', item.dataset.settingsPage === settingsTab.dataset.settingsTab)); settingsTab.scrollIntoView({ block: 'nearest', inline: 'nearest' }); if (settingsTab.dataset.settingsTab === 'cache') updateCacheSettings(); }
+  const settingsTab = event.target.closest('[data-settings-tab]'); if (settingsTab) { document.querySelectorAll('[data-settings-tab]').forEach(item => item.classList.toggle('active', item === settingsTab)); document.querySelectorAll('[data-settings-page]').forEach(item => item.classList.toggle('active', item.dataset.settingsPage === settingsTab.dataset.settingsTab)); settingsTab.scrollIntoView({ block: 'nearest', inline: 'nearest' }); if (settingsTab.dataset.settingsTab === 'cache') updateCacheSettings(); if (settingsTab.dataset.settingsTab === 'security') updateAccessSettings(); }
   const theme = event.target.closest('button[data-theme]'); if (theme) { settings.theme = theme.dataset.theme; persistSettings(); }
   const editorTheme = event.target.closest('button[data-editor-theme]'); if (editorTheme) { settings.editorTheme = editorTheme.dataset.editorTheme; persistSettings(); }
 });
@@ -2855,9 +2899,9 @@ document.addEventListener('pointerdown', event => {
 });
 
 document.querySelector('#file-list').addEventListener('dragstart', event => {
-  if (directoryHandle?.webdav) { event.preventDefault(); return; }
   const row = event.target.closest('.file-row, .folder-row');
   if (!row || !event.dataTransfer) return;
+  if (directoryHandle?.webdav && row.classList.contains('folder-row')) { event.preventDefault(); return; }
   const type = row.classList.contains('file-row') ? 'document' : 'folder';
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('application/x-paper-node', JSON.stringify({ type, id: row.dataset.id || row.dataset.folderId }));
@@ -3083,6 +3127,28 @@ document.querySelector('#setting-indent-size')?.addEventListener('change', event
 document.querySelector('#setting-line-ending')?.addEventListener('change', event => { settings.lineEnding = event.target.value; persistSettings(); });
 document.querySelector('#setting-image-path')?.addEventListener('change', event => { settings.imagePathMode = event.target.value; document.querySelector('#image-custom-path-row').hidden = event.target.value !== 'custom'; persistSettings(); });
 document.querySelector('#setting-image-custom')?.addEventListener('input', event => { settings.imageCustomPath = event.target.value; persistSettings(); });
+document.querySelector('#access-password-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = document.querySelector('#access-password-message');
+  if (!form.reportValidity()) return;
+  if (form.elements.password.value !== form.elements.confirm.value) { message.textContent = '两次输入的密码不一致'; return; }
+  form.querySelector('fieldset').disabled = true;
+  try {
+    const response = await fetch('/api/access/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: form.elements.password.value }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '无法修改访问密码');
+    form.reset();
+    message.textContent = '密码已修改，正在重新登录…';
+    setTimeout(() => location.reload(), 700);
+  } catch (error) { message.textContent = error.message; form.querySelector('fieldset').disabled = false; }
+});
+document.querySelector('#access-password-form [name="show"]')?.addEventListener('change', event => {
+  document.querySelectorAll('#access-password-form input[type="password"], #access-password-form input[data-visible-password]').forEach(input => {
+    input.type = event.target.checked ? 'text' : 'password';
+    input.toggleAttribute('data-visible-password', event.target.checked);
+  });
+});
 [['setting-font-size','fontSize','font-size-value','px'],['setting-line-height','lineHeight','line-height-value',''],['setting-content-width','contentWidth','content-width-value','px']].forEach(([id,key,output,suffix]) => document.querySelector('#' + id).addEventListener('input', event => { settings[key] = Number(event.target.value); document.querySelector('#' + output).textContent = event.target.value + suffix; persistSettings(); }));
 
 document.addEventListener('keydown', event => {

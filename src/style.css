@@ -415,6 +415,10 @@ img[data-dav-pending="true"][data-cache-dimensions="true"] { min-height:0; min-w
 .cache-actions { display:flex; flex-wrap:wrap; gap:8px; padding:16px 0; }
 .cache-actions button { display:inline-flex; align-items:center; gap:6px; padding:7px 10px; border:1px solid var(--border); border-radius:4px; }
 .cache-actions svg { width:15px; height:15px; }
+#access-password-fields { margin:0; padding:0; border:0; }
+#access-password-fields .select-row input { width:min(280px, 52%); height:32px; padding:5px 8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); font:inherit; }
+#access-password-fields:disabled { opacity:.64; }
+#access-password-message { min-height:20px; color:var(--muted); font-size:12px; }
 #image-cache-stats { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:10px; font-size:13px; }
 #image-cache-stats dd { margin:0; }
 #image-cache-message { overflow-wrap:anywhere; }

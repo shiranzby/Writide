@@ -113,7 +113,7 @@ test('Nutstore default address, password visibility and saved automatic recovery
     await page.locator('[data-command="open-webdav"]').click();
     const dialog = page.getByRole('dialog', { name: '连接 WebDAV' });
     await dialog.locator('[name="url"]').fill('');
-    await expect(dialog.locator('[name="url"]')).toHaveAttribute('placeholder', 'https://dav.jianguoyun.com/dav/');
+    await expect(dialog.locator('[name="url"]')).toHaveAttribute('placeholder', 'https://dav.jianguoyun.com/dav/Typora/');
     await dialog.locator('[name="username"]').fill('writer');
     await dialog.locator('[name="password"]').fill('secret');
     await dialog.getByRole('button', { name: '显示密码' }).click();
@@ -128,7 +128,7 @@ test('Nutstore default address, password visibility and saved automatic recovery
     });
     await dialog.getByRole('button', { name: '连接', exact: true }).click();
     await expect(dialog.locator('output')).toContainText('checked locally');
-    expect(defaultUrl).toBe('https://dav.jianguoyun.com/dav/');
+    expect(defaultUrl).toBe('https://dav.jianguoyun.com/dav/Typora/');
     await dialog.locator('[name="url"]').fill(dav.url);
     await dialog.locator('[name="allowHttp"]').check();
     await dialog.locator('[name="remember"]').check();

@@ -1,10 +1,10 @@
 import { createServer as createHttpServer } from 'node:http';
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { createWriteStream, existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer as createViteServer } from 'vite';
+import { productionAccess, serveProductionFile } from './server/production-http.mjs';
 import { spawn } from 'node:child_process';
 import { createLocalImageService } from './server/local-image-service.mjs';
 import { createWebdavService, webdavError } from './server/webdav-service.mjs';
@@ -14,16 +14,23 @@ import { createImageCache } from './server/webdav-image-cache.mjs';
 import { homedir } from 'node:os';
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = path.join(projectRoot, 'Workspace');
+const production = process.env.NODE_ENV === 'production';
+const access = production ? productionAccess(process.env) : null;
+const dataRoot = path.resolve(process.env.WRITIDE_DATA_DIR || projectRoot);
+const workspaceRoot = path.join(dataRoot, 'Workspace');
 /* Keep app bookkeeping outside the user-visible workspace. The workspace may
    then be truly empty, while revisions and deletion tombstones remain durable. */
-const metadataPath = path.join(projectRoot, '.typora-web-workspace-state.json');
+const metadataPath = path.join(dataRoot, '.typora-web-workspace-state.json');
 const legacyMetadataPath = path.join(workspaceRoot, '.typora-web.json');
+const accessStatePath = path.join(dataRoot, '.writide-access.json');
 const port = Number(process.env.PORT || 5173);
 const localImageToken = randomUUID();
 const davToken = randomUUID();
+const credentialFile = production
+  ? path.join(dataRoot, '.writide-webdav-credentials.enc')
+  : process.env.PLAYWRIGHT_TEST_SERVER ? path.join(projectRoot, 'test-results', 'webdav-test.dpapi') : undefined;
 const webdav = createWebdavService({
-  credentials: createCredentialStore(process.env.PLAYWRIGHT_TEST_SERVER ? path.join(projectRoot, 'test-results', 'webdav-test.dpapi') : undefined),
+  credentials: createCredentialStore(credentialFile),
   imageCache: createImageCache({ directory: process.env.WRITIDE_CACHE_DIR || process.env.INKQUAY_CACHE_DIR || (process.env.PLAYWRIGHT_TEST_SERVER
     ? path.join(projectRoot, 'test-results', 'image-cache') : path.join(homedir(), '.writide', 'image-cache')) }),
 });
@@ -39,6 +46,15 @@ const localImages = createLocalImageService({ workspaceRoot, reveal: file => new
 let workspaceSaveQueue = Promise.resolve();
 
 await mkdir(workspaceRoot, { recursive: true });
+if (access) {
+  try { access.restore(JSON.parse(await readFile(accessStatePath, 'utf8'))); } catch {}
+}
+
+async function persistAccessState(state) {
+  const temporaryPath = `${accessStatePath}.${process.pid}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporaryPath, accessStatePath);
+}
 
 const MIME_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -429,7 +445,7 @@ async function workspaceApi(req, res) {
 /* The workspace is user data, not application source. Do not let Vite's
    development watcher observe files that the API creates, renames, or removes
    while scanning and saving a mapped workspace on Windows. */
-const vite = await createViteServer({
+const vite = production ? null : await (await import('vite')).createServer({
   root: projectRoot,
   server: {
     middlewareMode: true,
@@ -446,12 +462,27 @@ const server = createHttpServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     const pathname = url.pathname;
+    if (pathname === '/api/health' && req.method === 'GET') {
+      return json(res, 200, { app: 'Writide', instance: createHash('sha256').update(projectRoot).digest('hex') });
+    }
+    if (access && !access(req, res)) return;
+    if (production && pathname === '/api/access' && req.method === 'GET') return json(res, 200, access.status());
+    if (production && pathname === '/api/access/password' && req.method === 'POST') {
+      try {
+        const body = await readBodyJson(req, 4096);
+        return json(res, 200, await access.changePassword(body?.password, persistAccessState));
+      } catch (error) { return json(res, 400, { error: error.message || '无法修改访问密码' }); }
+    }
+    if (production && pathname.startsWith('/api/local-images/')) return json(res, 400, { error: '容器不支持Windows资源管理器操作，请使用WebDAV或挂载的Workspace' });
+    if (production && (pathname === '/assets' || pathname.startsWith('/assets/') || pathname === '/image-viewer.html')) {
+      return serveProductionFile(path.join(projectRoot, 'dist'), pathname, req, res);
+    }
     if (pathname === '/api/webdav' || pathname === '/api/webdav/session') {
       const origin = `http://${req.headers.host}`;
-      if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)
-          || (req.headers.origin && req.headers.origin !== origin) || req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { error: '仅接受本机同源页面' });
+      if (!production && (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)
+          || (req.headers.origin && req.headers.origin !== origin) || req.headers['sec-fetch-site'] === 'cross-site')) return json(res, 403, { error: '仅接受本机同源页面' });
       res.setHeader('Cache-Control', 'no-store');
-      if (pathname.endsWith('/session') && req.method === 'GET') return json(res, 200, { token: davToken, version: 4, features: { documentRename: true } });
+      if (pathname.endsWith('/session') && req.method === 'GET') return json(res, 200, { token: davToken, version: 4, features: { documentRename: true, documentMove: true, encryptedCredentials: true } });
       if (req.method !== 'POST' || req.headers['x-paper-dav-token'] !== davToken) return json(res, 403, { error: '本机连接授权无效' });
       try { return json(res, 200, await webdav.run(await readBodyJson(req, 29 * 1024 * 1024))); }
       catch (error) { return json(res, [401, 412, 429, 503].includes(error.status) ? error.status : 400, { error: webdavError(error), code: error.code, retryAt: error.retryAt }); }
@@ -480,11 +511,12 @@ const server = createHttpServer(async (req, res) => {
       const served = await serveWorkspaceAsset(decodedPath, res);
       if (served) return;
     }
+    if (production) return serveProductionFile(path.join(projectRoot, 'dist'), pathname, req, res);
     vite.middlewares(req, res, error => { if (error) { console.error(error); res.statusCode = 500; res.end('Internal server error'); } });
   } catch (error) { console.error(error); json(res, 500, { error: error.message }); }
 });
 
-server.listen(port, '127.0.0.1', () => {
+server.listen(port, production ? '0.0.0.0' : '127.0.0.1', () => {
   console.log('Writide: http://127.0.0.1:' + port);
   console.log('Workspace: ' + workspaceRoot);
 });

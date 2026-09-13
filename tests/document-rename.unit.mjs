@@ -44,3 +44,21 @@ test('DAV document rename uses conditional non-overwriting MOVE and preserves Ma
     assert.equal(dav.calls.some(call => call.method === 'PUT' || call.method === 'DELETE'), false);
   } finally { await dav.close(); }
 });
+
+test('DAV cross-directory move rejects collisions and stale bodies', async () => {
+  const dav = await mockWebdav(); dav.folders.add('archive');
+  try {
+    const service = createWebdavService();
+    const { session } = await service.run({ action: 'connect', url: dav.url, username: 'writer', password: 'secret' });
+    const content = dav.files.get('说明.md').data.toString();
+    const move = extra => service.run({ action: 'move', session, path: '说明.md', destination: 'archive/说明.md', content, etag: '"initial"', ...extra });
+    await assert.rejects(move({ content: 'stale body' }), error => error.status === 412);
+    dav.files.set('archive/说明.md', { data: Buffer.from('keep'), etag: '"keep"' });
+    await assert.rejects(move({}), error => error.status === 412);
+    assert.equal(dav.files.get('archive/说明.md').data.toString(), 'keep');
+    assert.equal(dav.files.get('说明.md').data.toString(), content);
+    dav.files.delete('archive/说明.md');
+    assert.equal((await move({})).path, 'archive/说明.md');
+    assert.equal(dav.files.get('archive/说明.md').data.toString(), content);
+  } finally { await dav.close(); }
+});

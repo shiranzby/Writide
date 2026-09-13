@@ -10,7 +10,7 @@ export function createWebdavDialog({ connect, disconnect, reveal, forget, previo
     <label>目录地址<input name="url" type="url" placeholder="${DEFAULT_DAV_URL}" autocomplete="url"></label>
     <label>用户名<input name="username" autocomplete="username"></label>
     <label>密码<span class="dav-password"><input name="password" type="password" autocomplete="off"><button type="button" name="showPassword" aria-label="显示密码" title="显示密码"><i data-lucide="eye"></i></button></span></label>
-    <div class="dav-options"><label><input name="remember" type="checkbox">保存密码（Windows用户加密）</label><label><input name="autoLogin" type="checkbox">自动登录与重连</label></div>
+    <div class="dav-options"><label><input name="remember" type="checkbox">保存密码（服务端加密）</label><label><input name="autoLogin" type="checkbox">自动登录与重连</label></div>
     <label class="dav-http"><input name="allowHttp" type="checkbox">允许 HTTP 明文连接（含账号密码）</label>
     <output role="status"></output>
     <footer><button type="button" name="disconnect">断开连接</button><button type="submit">连接</button></footer>

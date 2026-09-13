@@ -35,7 +35,14 @@ for (const [startProgress, progress] of [[0, .25], [0, .5], [0, .8], [.8, .25]])
       await page.mouse.move(d.x, firstY); await page.mouse.down();
       await page.mouse.move(d.x, targetY, { steps: 12 }); await page.mouse.up();
       const expectedProgress = await surface.evaluate(el => el.scrollTop / (el.scrollHeight - el.clientHeight));
-      await surface.evaluate((el, top) => { el.scrollTop = top; }, d.scroll);
+      // The calibration drag intentionally leaves a source-block anchor after
+      // pointerup. Cancel that interaction before resetting, or a later CM
+      // measure can restore the calibration position and turn the next
+      // pointerdown into a scrollbar-track click instead of a thumb drag.
+      await surface.evaluate((el, top) => {
+        el.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+        el.scrollTop = top;
+      }, d.scroll);
       await page.waitForTimeout(100);
       await page.mouse.move(d.x, firstY); await page.mouse.down();
       await page.mouse.move(d.x, firstY + (targetY - firstY) / 2, { steps: 6 });
@@ -43,6 +50,11 @@ for (const [startProgress, progress] of [[0, .25], [0, .5], [0, .8], [.8, .25]])
       await expect.poll(() => page.locator('#typora-editor img').evaluateAll(images => images.some((img: HTMLImageElement) => img.naturalHeight === 1200))).toBe(true);
       await page.mouse.move(d.x, targetY, { steps: 6 });
       await page.waitForTimeout(180);
+      // A page evaluation while Chromium owns a native scrollbar drag can
+      // occasionally swallow the final interpolated Playwright move. Reassert
+      // the held pointer's final physical position without releasing the thumb.
+      await page.mouse.move(d.x, targetY - 1);
+      await page.mouse.move(d.x, targetY);
       expect(Math.abs(await surface.evaluate(el => el.scrollHeight) - d.total)).toBeLessThan(30);
       const selected = await surface.evaluate(el => el.scrollTop / (el.scrollHeight - el.clientHeight));
       expect(Math.abs(selected - expectedProgress), JSON.stringify({ d, selected, expectedProgress, errors })).toBeLessThan(.015);
