@@ -27,6 +27,11 @@ function credentialsCover(saved, url, username) {
   // Reuse credentials only inside the already authorized origin and subtree.
   return from.origin === to.origin && decodeURIComponent(to.pathname).startsWith(decodeURIComponent(from.pathname).replace(/\/*$/, '/'));
 }
+export function supportsConditionalEtag(url, tag) {
+  if (typeof tag !== 'string') return false;
+  if (/^"[^\r\n]*"$/.test(tag)) return true;
+  return new URL(url).hostname === 'dav.jianguoyun.com' && /^[A-Za-z0-9_-]+$/.test(tag);
+}
 export function createWebdavService({ credentials, imageCache } = {}) {
   const sessions = new Map();
   const media = new Map();
@@ -116,10 +121,7 @@ export function createWebdavService({ credentials, imageCache } = {}) {
             || (body.action === 'move' && path.split('/').at(-1) !== destination.split('/').at(-1))
             || destination === path) throw new Error('只支持同一目录内的文档重命名');
         const tag = body.etag;
-        const quoted = typeof tag === 'string' && /^"[^\r\n"]+"$/.test(tag);
-        const nutstoreOpaque = new URL(session.url).hostname === 'dav.jianguoyun.com'
-          && typeof tag === 'string' && /^[A-Za-z0-9_-]+$/.test(tag);
-        if (!quoted && !nutstoreOpaque) throw new Error('缺少可用于条件重命名的ETag，未移动文件');
+        if (!supportsConditionalEtag(session.url, tag)) throw new Error('缺少可用于条件重命名的ETag，未移动文件');
         if (typeof body.content !== 'string' || Buffer.byteLength(body.content) > limit) throw new Error('无效文档内容');
         if (body.action === 'move') {
           const original = await client.getFileContents(path, { ...options(), details: true });
@@ -184,7 +186,7 @@ export function createWebdavService({ credentials, imageCache } = {}) {
         if (typeof body.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.data)) throw new Error('无效文件内容');
         const data = Buffer.from(body.data, 'base64');
         if (data.length > limit) throw new Error('单文件超过20MiB');
-        if (body.etag !== null && (typeof body.etag !== 'string' || !/^"[^\r\n]*"$/.test(body.etag))) throw new Error('远端未提供强ETag，拒绝无条件覆盖；请另存为新文件');
+        if (body.etag !== null && !supportsConditionalEtag(session.url, body.etag)) throw new Error('远端未提供可用于条件保存的ETag，拒绝无条件覆盖；请另存为新文件');
         const written = await client.putFileContents(path, data, { ...options(), overwrite: body.etag !== null,
           headers: body.etag === null ? {} : { 'If-Match': body.etag } });
         if (!written) throw Object.assign(new Error('远端已存在同名文件，未覆盖'), { status: 412 });

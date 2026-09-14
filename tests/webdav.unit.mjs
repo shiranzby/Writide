@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createWebdavService } from '../server/webdav-service.mjs';
+import { createWebdavService, supportsConditionalEtag } from '../server/webdav-service.mjs';
 import { mockWebdav } from './fixtures/webdav-server.mjs';
 import { restoreWorkspaceFile, rememberWorkspace } from '../src/workspace-session.js';
 
@@ -27,6 +27,14 @@ test('real DAV protocol reads Unicode, writes conditionally and rejects conflict
     await run('disconnect');
     await assert.rejects(run('list'), error => error.status === 401);
   } finally { await dav.close(); }
+});
+
+test('conditional ETag accepts Nutstore opaque versions without weakening other providers', () => {
+  assert.equal(supportsConditionalEtag('https://dav.jianguoyun.com/dav/Typora/', 'vu5yBJMNCTK83lmhe5dlKw'), true);
+  assert.equal(supportsConditionalEtag('https://dav.jianguoyun.com/dav/Typora/', 'bad tag'), false);
+  assert.equal(supportsConditionalEtag('https://example.test/dav/', 'vu5yBJMNCTK83lmhe5dlKw'), false);
+  assert.equal(supportsConditionalEtag('https://example.test/dav/', '"standard"'), true);
+  assert.equal(supportsConditionalEtag('https://example.test/dav/', ''), false);
 });
 
 test('startup restores last file by source path, missing file and workspace-only stay closed', () => {
